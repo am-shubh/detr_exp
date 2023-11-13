@@ -3,7 +3,7 @@ FROM pytorch/pytorch:2.0.0-cuda11.7-cudnn8-runtime
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update -qq && \
-    apt-get install -y git vim libgtk2.0-dev && \
+    apt-get install -y git vim libgtk2.0-dev ffmpeg libsm6 libxext6 && \
     rm -rf /var/cache/apk/*
 
 RUN pip --no-cache-dir install Cython

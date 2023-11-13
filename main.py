@@ -14,8 +14,9 @@ from utils import LoggerWriter, prepare_for_coco_detection
 from torch.utils.data import DataLoader
 from transformers import DetrImageProcessor
 from pytorch_lightning import Trainer
+from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from coco_eval import CocoEvaluator
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 
 
 class CustomDETR:
@@ -119,23 +120,29 @@ class CustomDETR:
         )
 
     def train(self):
+
+        # Callbacks
+        early_stopping = EarlyStopping(monitor="validation/loss", mode="min", patience=5)
+        
         trainer = Trainer(
             devices=1,
             accelerator="gpu",
             max_epochs=self.epochs,
             gradient_clip_val=0.1,
             accumulate_grad_batches=8,
-            log_every_n_steps=5,
+            log_every_n_steps=100,
+            callbacks=[early_stopping]
         )
 
         trainer.fit(self.model)
 
     def evaluate(self):
+        self.model.to(DEVICE)
+
         evaluator = CocoEvaluator(coco_gt=self.test_dataset.coco, iou_types=["bbox"])
 
-        for idx, batch in enumerate(
-            tqdm(self.test_dataloader, desc="Running evaluation...")
-        ):
+        for batch in tqdm(self.test_dataloader, desc="Running evaluation..."):
+
             pixel_values = batch["pixel_values"].to(DEVICE)
             pixel_mask = batch["pixel_mask"].to(DEVICE)
             labels = [{k: v.to(DEVICE) for k, v in t.items()} for t in batch["labels"]]
@@ -231,6 +238,8 @@ if __name__ == "__main__":
         detr.train()
 
         detr.evaluate()
+
+        detr.prediction()
 
         detr.save_model()
 
