@@ -1,12 +1,12 @@
 import pytorch_lightning as pl
 from transformers import DetrForObjectDetection
-from constants import *
 import torch
 
 
 class Detr(pl.LightningModule):
     def __init__(
         self,
+        checkpoint,
         lr,
         lr_backbone,
         weight_decay,
@@ -16,7 +16,7 @@ class Detr(pl.LightningModule):
     ):
         super().__init__()
         self.model = DetrForObjectDetection.from_pretrained(
-            pretrained_model_name_or_path=CHECKPOINT,
+            pretrained_model_name_or_path=checkpoint,
             num_labels=len(id2label),
             ignore_mismatched_sizes=True,
         )

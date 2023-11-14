@@ -23,7 +23,7 @@ class CustomDETR:
     def __init__(self) -> None:
         self.read_config()
 
-        self.test_img_paths = list(paths.list_images(DATASET_LOCATION + "test"))
+        self.test_img_paths = list(paths.list_images(TEST_DIRECTORY))
 
         self.box_annotator = sv.BoxAnnotator()
 
@@ -45,6 +45,7 @@ class CustomDETR:
         # retrain means loading weights from previous training on same dataset(i.e. Re-Finetuning)
         # else it will take open source weights to train the model
         if self.retrain:
+            logging.info("Loading previous training weights...")
             CHECKPOINT = PREVIOUS_TRAIN_PATH
 
     def get_model(self):
@@ -53,6 +54,7 @@ class CustomDETR:
         self.get_loader()
 
         self.model = Detr(
+            CHECKPOINT,
             self.learning_rate,
             self.lr_backbone,
             self.weight_decay,
@@ -60,6 +62,7 @@ class CustomDETR:
             self.train_dataloader,
             self.val_dataloader,
         )
+
 
     def collate_fn(self, batch):
         # DETR authors employ various image sizes during training, making it not possible
@@ -120,10 +123,11 @@ class CustomDETR:
         )
 
     def train(self):
-
         # Callbacks
-        early_stopping = EarlyStopping(monitor="validation/loss", mode="min", patience=5)
-        
+        early_stopping = EarlyStopping(
+            monitor="validation/loss", mode="min", patience=5
+        )
+
         trainer = Trainer(
             devices=1,
             accelerator="gpu",
@@ -131,7 +135,7 @@ class CustomDETR:
             gradient_clip_val=0.1,
             accumulate_grad_batches=8,
             log_every_n_steps=100,
-            callbacks=[early_stopping]
+            callbacks=[early_stopping],
         )
 
         trainer.fit(self.model)
@@ -139,36 +143,52 @@ class CustomDETR:
     def evaluate(self):
         self.model.to(DEVICE)
 
-        evaluator = CocoEvaluator(coco_gt=self.test_dataset.coco, iou_types=["bbox"])
+        # initialize evaluator with ground truth (gt)
+        evaluator = CocoEvaluator(coco_gt=self.val_dataset.coco, iou_types=["bbox"])
 
-        for batch in tqdm(self.test_dataloader, desc="Running evaluation..."):
-
+        for idx, batch in enumerate(
+            tqdm(self.val_dataloader, desc="Running evaluation...")
+        ):
+            # get the inputs
             pixel_values = batch["pixel_values"].to(DEVICE)
             pixel_mask = batch["pixel_mask"].to(DEVICE)
-            labels = [{k: v.to(DEVICE) for k, v in t.items()} for t in batch["labels"]]
+            labels = [
+                {k: v.to(DEVICE) for k, v in t.items()} for t in batch["labels"]
+            ]  # these are in DETR format, resized + normalized
 
+            # forward pass
             with torch.no_grad():
                 outputs = self.model(pixel_values=pixel_values, pixel_mask=pixel_mask)
 
+            # turn into a list of dictionaries (one item for each example in the batch)
             orig_target_sizes = torch.stack(
                 [target["orig_size"] for target in labels], dim=0
             )
             results = self.image_processor.post_process_object_detection(
-                outputs, target_sizes=orig_target_sizes
+                outputs, target_sizes=orig_target_sizes, threshold=self.confidence_score
             )
 
-            predictions = {
-                target["image_id"].item(): output
-                for target, output in zip(labels, results)
-            }
-            predictions = prepare_for_coco_detection(predictions)
-            evaluator.update(predictions)
+            # To handle no detection on given threshold
+            if len(results[0]["boxes"].cpu()) != 0:
+
+                # provide to metric
+                # metric expects a list of dictionaries, each item
+                # containing image_id, category_id, bbox and score keys
+                predictions = {
+                    target["image_id"].item(): output
+                    for target, output in zip(labels, results)
+                }
+
+                predictions = prepare_for_coco_detection(predictions)
+                evaluator.update(predictions)
 
         evaluator.synchronize_between_processes()
         evaluator.accumulate()
         evaluator.summarize()
 
     def prediction(self):
+        self.model.to(DEVICE)
+
         for img_path in tqdm(self.test_img_paths, desc="Running Predictions..."):
             image = cv2.imread(img_path)
 
@@ -195,7 +215,7 @@ class CustomDETR:
 
                 labels = [
                     f"{self.id2label[class_id]} {confidence:.2f}"
-                    for _, confidence, class_id, _ in detections
+                    for _, _, confidence, class_id, _ in detections
                 ]
 
                 frame = self.box_annotator.annotate(
@@ -205,13 +225,17 @@ class CustomDETR:
                 cv2.imwrite(
                     os.path.join(PREDICTION_DIR, os.path.basename(img_path)), frame
                 )
+
             else:
                 cv2.imwrite(
                     os.path.join(PREDICTION_DIR, os.path.basename(img_path)), image
                 )
 
+
+
     def save_model(self):
         logging.info("Saving Weights...")
+
         self.model.model.save_pretrained(MODEL_PATH)
 
 
