@@ -10,13 +10,15 @@ from imutils import paths
 from constants import *
 from detr import Detr
 from coco_detection import CocoDetection
-from utils import LoggerWriter, prepare_for_coco_detection
+from utils import LoggerWriter, prepare_for_coco_detection, slice_dataset
 from torch.utils.data import DataLoader
 from transformers import DetrImageProcessor
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
 from coco_eval import CocoEvaluator
 from tqdm import tqdm
+from sahi import AutoDetectionModel
+from sahi.predict import get_sliced_prediction
 
 
 class CustomDETR:
@@ -40,6 +42,11 @@ class CustomDETR:
         self.weight_decay = self.config["weight_decay"]
         self.epochs = self.config["epochs"]
 
+        self.sahi_enabled = self.config["sahi"]
+
+        if self.sahi_enabled:
+            self.sahi_params = self.config["sahi_params"]
+
         self.retrain = self.config["retrain"]
 
         # retrain means loading weights from previous training on same dataset(i.e. Re-Finetuning)
@@ -51,7 +58,22 @@ class CustomDETR:
     def get_model(self):
         self.image_processor = DetrImageProcessor.from_pretrained(CHECKPOINT)
 
-        self.get_loader()
+        if self.sahi_enabled:
+            if self.sahi_params["slice_height"] >= self.sahi_params["slice_width"]:
+                longest_edge = self.sahi_params["slice_height"]
+                shortest_edge = self.sahi_params["slice_width"]
+
+            else:
+                shortest_edge = self.sahi_params["slice_height"]
+                longest_edge = self.sahi_params["slice_width"]
+
+            self.image_processor.size["shortest_edge"] = shortest_edge
+            self.image_processor.size["longest_edge"] = longest_edge
+
+        # save pre-processor in Trained weights folder
+        self.image_processor.save_pretrained(MODEL_PATH)
+
+        self.get_data_loader()
 
         self.model = Detr(
             CHECKPOINT,
@@ -62,7 +84,6 @@ class CustomDETR:
             self.train_dataloader,
             self.val_dataloader,
         )
-
 
     def collate_fn(self, batch):
         # DETR authors employ various image sizes during training, making it not possible
@@ -78,7 +99,12 @@ class CustomDETR:
             "labels": labels,
         }
 
-    def get_loader(self):
+    def get_data_loader(self):
+        # Creating slice of Train and Valid dataset
+        if self.sahi_enabled:
+            slice_dataset(self.sahi_params, "train")
+            slice_dataset(self.sahi_params, "valid")
+
         self.train_dataset = CocoDetection(
             image_directory_path=TRAIN_DIRECTORY,
             image_processor=self.image_processor,
@@ -170,7 +196,6 @@ class CustomDETR:
 
             # To handle no detection on given threshold
             if len(results[0]["boxes"].cpu()) != 0:
-
                 # provide to metric
                 # metric expects a list of dictionaries, each item
                 # containing image_id, category_id, bbox and score keys
@@ -231,7 +256,31 @@ class CustomDETR:
                     os.path.join(PREDICTION_DIR, os.path.basename(img_path)), image
                 )
 
+    def sahi_prediction(self):
+        category_mapping = {str(k): v["name"] for k, v in self.categories.items()}
 
+        detection_model = AutoDetectionModel.from_pretrained(
+            model_type="huggingface",
+            model_path=MODEL_PATH,
+            config_path=MODEL_PATH,
+            confidence_threshold=self.confidence_score,
+            category_mapping=category_mapping,
+            device="cuda",
+        )
+
+        for img_path in tqdm(self.test_img_paths, desc="Running Predictions..."):
+            result = get_sliced_prediction(
+                img_path,
+                detection_model,
+                slice_height=self.sahi_params["slice_height"],
+                slice_width=self.sahi_params["slice_width"],
+                overlap_height_ratio=self.sahi_params["overlap_height_ratio"],
+                overlap_width_ratio=self.sahi_params["overlap_width_ratio"],
+            )
+
+            result.export_visuals(
+                export_dir=PREDICTION_DIR, file_name=os.path.basename(img_path)
+            )
 
     def save_model(self):
         logging.info("Saving Weights...")
@@ -263,9 +312,12 @@ if __name__ == "__main__":
 
         detr.evaluate()
 
-        detr.prediction()
-
         detr.save_model()
+
+        if detr.sahi_enabled:
+            detr.sahi_prediction()
+        else:
+            detr.prediction()
 
     except Exception as e:
         logging.error(e)

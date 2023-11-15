@@ -5,7 +5,6 @@ from constants import *
 
 class CocoDetection(torchvision.datasets.CocoDetection):
     def __init__(self, image_directory_path: str, image_processor, train: bool = True):
-
         # Augmentation, Change as per need
         # self.transforms = v2.Compose(
         #     [
@@ -20,9 +19,9 @@ class CocoDetection(torchvision.datasets.CocoDetection):
 
         annotation_file_path = os.path.join(image_directory_path, ANNOTATION_FILE_NAME)
         super(CocoDetection, self).__init__(image_directory_path, annotation_file_path)
-        
+
         # if train:
-            # super(CocoDetection, self).__init__(image_directory_path, annotation_file_path, transforms=self.transforms)
+        # super(CocoDetection, self).__init__(image_directory_path, annotation_file_path, transforms=self.transforms)
 
         self.image_processor = image_processor
 
