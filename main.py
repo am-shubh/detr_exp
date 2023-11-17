@@ -169,6 +169,8 @@ class CustomDETR:
     def evaluate(self):
         self.model.to(DEVICE)
 
+        eval_flag = False
+
         # initialize evaluator with ground truth (gt)
         evaluator = CocoEvaluator(coco_gt=self.val_dataset.coco, iou_types=["bbox"])
 
@@ -196,6 +198,8 @@ class CustomDETR:
 
             # To handle no detection on given threshold
             if len(results[0]["boxes"].cpu()) != 0:
+                eval_flag = True
+
                 # provide to metric
                 # metric expects a list of dictionaries, each item
                 # containing image_id, category_id, bbox and score keys
@@ -207,9 +211,12 @@ class CustomDETR:
                 predictions = prepare_for_coco_detection(predictions)
                 evaluator.update(predictions)
 
-        evaluator.synchronize_between_processes()
-        evaluator.accumulate()
-        evaluator.summarize()
+        if eval_flag:
+            evaluator.synchronize_between_processes()
+            evaluator.accumulate()
+            evaluator.summarize()
+        else:
+            logging.info("No Results obtained based on threshold!")
 
     def prediction(self):
         self.model.to(DEVICE)
@@ -286,6 +293,18 @@ class CustomDETR:
         logging.info("Saving Weights...")
 
         self.model.model.save_pretrained(MODEL_PATH)
+
+        # update config file because the config file created do not update it properly
+        with open(os.path.join(MODEL_PATH, "config.json"), "r") as fp:
+            config_data = json.load(fp)
+
+        config_data["id2label"] = {
+            str(k): v["name"] for k, v in self.categories.items()
+        }
+        config_data["label2id"] = {v["name"]: k for k, v in self.categories.items()}
+
+        with open(os.path.join(MODEL_PATH, "config.json"), "w") as fp:
+            json.dump(config_data, fp)
 
 
 if __name__ == "__main__":
